@@ -2,7 +2,9 @@
 // /output/answers.json. MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR stand in for /input and /output outside a container.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { setFlagsFromString } from 'node:v8';
-setFlagsFromString('--no-incremental-marking');
+// The run is short: TurboFan's compile work costs more than it saves (-15 ms CPU measured), and on one CPU the GC's
+// helper threads only add switching (-5 ms).
+setFlagsFromString('--no-incremental-marking --no-opt --single-threaded-gc');
 import { run } from './solve.js';
 
 const inDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';

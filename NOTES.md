@@ -37,3 +37,16 @@
 |---|---|---|
 | baseline | 323 | |
 | v1: own scanners + include cache | 184 | 1.75x |
+| escaping and inline scanning on native regex (test/replace), not JS char loops | 150 | cold JS loops are the cost |
+| `--no-opt --single-threaded-gc` via setFlagsFromString | 131 | TurboFan compiles cost more than they save in a 100 ms run |
+| word count back on `match(/\S+/g)` | 96 | with TurboFan off the JS loop took 52 ms, native 10 ms |
+
+Tried and dropped (no gain at 95%, so not worth the code):
+- Building the answer as JSON text directly (pieces escaped once, no JSON.stringify pass): 134.2 vs 135.7 ms total.
+- JSON.stringify per case right after it is built, to let its ropes die young: no change.
+- --max-lazy, --no-lazy-feedback-allocation, --no-flush-bytecode, --no-maglev on top of --no-opt: no change.
+
+Correctness for v2: test/diff.mjs runs strict (MF_STRICT=1: a throw in the fast build fails instead of falling back),
+600 more seeds plus 12 hand-written sites (huge page, empty files, CRLF and lone CR, unicode slugs, list-like
+lines, entities and raw HTML, missing index/tag/tags/layout templates, broken templates, no posts, statics shadowed by
+pages, deep relative links).

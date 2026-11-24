@@ -8,6 +8,9 @@
 // Every site is built twice by solve.js (fresh input copies); both builds must equal the reference's.
 
 import { createHash } from 'node:crypto';
+
+// The fast build must stand on its own here: a throw is a failure, never covered by the reference fallback.
+process.env.MF_STRICT = '1';
 import { pathToFileURL } from 'node:url';
 
 const kit = process.argv[2];
@@ -172,5 +175,27 @@ console.log(`generated: ${ok}/${nGen} identical`);
 let okF = 0;
 for (let k = first; k < first + nFuzz; k++) if (check(`fuzz ${k}`, fuzzSite(rngOf(`fuzz ${k}`), k))) okF++;
 console.log(`fuzzed: ${okF}/${nFuzz} identical`);
-console.log(`${failures === 0 ? 'PASS' : 'FAIL'}: ${ok + okF}/${nGen + nFuzz} sites identical, each built twice (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+// Hand-written sites: each starts from a small generated site and adds one nasty thing.
+const NASTY = [
+  ['huge page', (s) => s.files.push({ path: 'docs/huge.md', content: `---\ntitle: Huge\n---\n${'Some *text* with [a link](../x.md) & `code` <b>.\n'.repeat(6000)}` })],
+  ['empty files', (s) => s.files.push({ path: 'empty.md', content: '' }, { path: 'posts/e.md', content: '---\n---\n' }, { path: 'blank.txt', content: '' })],
+  ['crlf and lone cr', (s) => s.files.push({ path: 'cr.md', content: '---\r\ntitle: CR\r---\r\n# Head\r\rpara\r\n- a\r- b\r\n' })],
+  ['unicode slugs', (s) => s.files.push(...['Ærøskøbing', 'ﬁnal ﬁx', 'Ｗｉｄｅ', '東京', 'crème brûlée', 'Füße', 'Δέλτα', '́́', 'İstanbul'].map((t, k) => ({ path: `u${k}.md`, content: `---\ntitle: ${t}\n---\n## ${t}\n### ${t}\n` })))],
+  ['nested lists', (s) => s.files.push({ path: 'l.md', content: '---\ntitle: L\n---\n- a\n  - b\n    - c\n1. x\n   2. y\n3) z\n* q\n- r\n  cont\n\t- tab\n' })],
+  ['entities and raw html', (s) => s.files.push({ path: 'h.md', content: '---\ntitle: "<b>&amp;</b> \\"q\\""\nsummary: &lt; <i>\n---\n<div>&copy; &#169; &amp;</div>\n<script>x</script>\n> &nbsp;<\n' })],
+  ['missing index/tag/tags', (s) => { delete s.templates.index; delete s.templates.tag; delete s.templates.tags; }],
+  ['missing layout', (s) => { delete s.templates.post; }],
+  ['broken template', (s) => { s.templates.card = '{% for p in posts %}{{ p.title }'; s.templates.head = '{% if page %}x'; }],
+  ['no posts', (s) => { s.files = s.files.filter((f) => !f.path.startsWith('posts/')); }],
+  ['static shadows page', (s) => s.files.push({ path: 'index.html', content: 'static' }, { path: 'tags/index.html', content: 's' }, { path: 'robots.txt', content: 'dup' })],
+  ['deep dirs and dots', (s) => s.files.push({ path: 'a/b/c/d.md', content: '---\ntitle: D\n---\n[up](../../../../x.md) [dot](./d.md) [self](d.md#f) [abs](/a) [s](mailto:x) [h](#h) [q](a/../b/../d.md)\n' })],
+];
+let okN = 0;
+for (const [label, mutate] of NASTY) {
+  const site = generate(rngOf(`nasty ${label}`), 0);
+  mutate(site);
+  if (check(`nasty ${label}`, site)) okN++;
+}
+console.log(`hand-written: ${okN}/${NASTY.length} identical`);
+console.log(`${failures === 0 ? 'PASS' : 'FAIL'}: ${ok + okF + okN}/${nGen + nFuzz + NASTY.length} sites identical, each built twice (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
 process.exitCode = failures === 0 ? 0 : 1;

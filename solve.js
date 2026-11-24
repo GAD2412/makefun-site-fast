@@ -10,37 +10,21 @@ const byCodeUnits = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ---------------------------------------------------------------- text
 
-const ESC = ['', '', '', '', '', ''];
-const ESC_CODE = new Int8Array(128); // 1..5: & < > " '
-ESC_CODE[38] = 1; ESC[1] = '&amp;';
-ESC_CODE[60] = 2; ESC[2] = '&lt;';
-ESC_CODE[62] = 3; ESC[3] = '&gt;';
-ESC_CODE[34] = 4; ESC[4] = '&quot;';
-ESC_CODE[39] = 5; ESC[5] = '&#39;';
-
+// Escaping runs in native code (one test, then one replace per character present): cold JS loops cost far more.
+const ESC_ANY = /[&<>"']/;
+const AMP = /&/g;
+const LT = /</g;
+const GT = />/g;
+const QUOT = /"/g;
+const APOS = /'/g;
 function esc(s) {
-  const n = s.length;
-  let i = 0;
-  for (; i < n; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 128 && ESC_CODE[c] !== 0) break;
-  }
-  if (i === n) return s;
-  let out = s.slice(0, i);
-  let last = i;
-  for (; i < n; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 128) {
-      const e = ESC_CODE[c];
-      if (e !== 0) {
-        if (last < i) out += s.slice(last, i);
-        out += ESC[e];
-        last = i + 1;
-      }
-    }
-  }
-  if (last < n) out += s.slice(last);
-  return out;
+  if (!ESC_ANY.test(s)) return s;
+  if (s.indexOf('&') !== -1) s = s.replace(AMP, '&amp;');
+  if (s.indexOf('<') !== -1) s = s.replace(LT, '&lt;');
+  if (s.indexOf('>') !== -1) s = s.replace(GT, '&gt;');
+  if (s.indexOf('"') !== -1) s = s.replace(QUOT, '&quot;');
+  if (s.indexOf("'") !== -1) s = s.replace(APOS, '&#39;');
+  return s;
 }
 
 function slugifyRef(text) {
@@ -113,24 +97,11 @@ function longDate(date) {
   return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}`;
 }
 
-/** Whether code unit c is whitespace as JavaScript's \s reads it. */
-function isWs(c) {
-  if (c < 128) return c === 32 || (c >= 9 && c <= 13);
-  return c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
-}
-
+// Native regex beats a JS loop by 5x while the code is cold (and with TurboFan off): measured 10 ms against 52 ms.
+const WORD = /\S+/g;
 function wordsOf(text) {
-  let count = 0;
-  let inWord = false;
-  for (let i = 0, n = text.length; i < n; i++) {
-    const c = text.charCodeAt(i);
-    if (c === 32 || c === 10 || isWs(c)) inWord = false;
-    else if (!inWord) {
-      inWord = true;
-      count++;
-    }
-  }
-  return count;
+  const m = text.match(WORD);
+  return m === null ? 0 : m.length;
 }
 
 // ---------------------------------------------------------------- front matter
@@ -294,9 +265,6 @@ const ESCAPABLE = new Uint8Array(128);
 for (const ch of '\\`*_[]()#+-.!>') ESCAPABLE[ch.charCodeAt(0)] = 1;
 const escapable = (c) => c < 128 && ESCAPABLE[c] === 1;
 
-// Inline characters that need handling: the escape table's five, \ ` * [
-const SPECIAL = new Uint8Array(128);
-for (const ch of '&<>"\'\\`*[') SPECIAL[ch.charCodeAt(0)] = 1;
 
 function findUnescaped(s, what, from) {
   const n = s.length;
@@ -331,18 +299,20 @@ function findSingleStar(s, from) {
   return -1;
 }
 
+// The structural inline characters: \ ` * [. Everything between two of them is one run, escaped natively.
+const STRUCT = /[\\`*[]/g;
+
 function inline(s, env) {
   const n = s.length;
   let out = '';
   let last = 0;
   let i = 0;
   while (i < n) {
+    STRUCT.lastIndex = i;
+    if (!STRUCT.test(s)) break;
+    i = STRUCT.lastIndex - 1;
     const c = s.charCodeAt(i);
-    if (c >= 128 || SPECIAL[c] === 0) {
-      i++;
-      continue;
-    }
-    if (last < i) out += s.slice(last, i);
+    if (last < i) out += esc(s.slice(last, i));
     if (c === 92) {
       if (i + 1 < n && escapable(s.charCodeAt(i + 1))) {
         out += s.charCodeAt(i + 1) === 62 ? '&gt;' : s[i + 1];
@@ -391,14 +361,11 @@ function inline(s, env) {
         out += '[';
         i++;
       }
-    } else {
-      out += ESC[ESC_CODE[c]];
-      i++;
     }
     last = i;
   }
-  if (last === 0) return s;
-  if (last < n) out += s.slice(last);
+  if (last === 0) return esc(s);
+  if (last < n) out += esc(s.slice(last));
   return out;
 }
 
@@ -1002,6 +969,8 @@ function build(input) {
   return output;
 }
 
+/** Tests set MF_STRICT=1 so that a failure of the fast build shows instead of being covered by the fallback. */
+const STRICT = process.env.MF_STRICT === '1';
 let reference = null;
 function referenceBuild(input) {
   if (reference === null) reference = createRequire(import.meta.url)('./vendor/makefun-site/index.js').build;
@@ -1012,7 +981,8 @@ function referenceBuild(input) {
 export function run(input) {
   try {
     return build(input);
-  } catch {
+  } catch (err) {
+    if (STRICT) throw err;
     return referenceBuild(input);
   }
 }
